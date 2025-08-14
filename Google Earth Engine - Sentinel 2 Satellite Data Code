@@ -1,0 +1,219 @@
+// Specify the date range
+var startDate = '2022-11-01';
+var endDate = '2022-11-30';
+
+// Create an ImageCollection for Sentinel-2 imagery
+var collection = ee.ImageCollection('COPERNICUS/S2')
+  .filterBounds(roi,non_water,non_water1)
+  .filterDate(startDate, endDate)
+  .sort('CLOUD_COVER');
+
+  
+
+// Function to mask clouds using the Sentinel-2 QA band
+function maskS2clouds(collection) {
+  var qa = collection.select('QA60');
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return collection
+  .updateMask(mask).divide(10000);
+}
+
+// Apply cloud masking function to the collection
+collection = collection.map(maskS2clouds);
+
+// Visualization parameters for the original Sentinel-2 imagery
+var visParams = {
+  bands: ['B4', 'B3', 'B2'], // True color visualization using bands 4 (red), 3 (green), and 2 (blue)
+  min: 0,                    // Minimum pixel value
+  max: 3000,                 // Maximum pixel value
+  gamma: 1.4                 // Gamma correction (adjust as needed)
+};
+
+// Center the map on the ROI.
+Map.centerObject(roi, 10);
+
+// Add the Sentinel-2 image to the map.
+var medianComposite = collection.median();
+Map.addLayer(medianComposite, visParams, 'Sentinel-2 Image');
+// Add the ROI to the map in red color.
+Map.addLayer(roi, { color: 'FF0000' }, 'ROI');
+
+// Add the non-water dataset to the map (e.g., land cover) with different visualization parameters.
+Map.addLayer(non_water, { color: '00FF00' }, 'non_water');
+print(non_water)
+
+Map.addLayer(non_water1, { color: '00FF00' }, 'non_water');
+print(non_water1)
+
+// Calculate the total number of polygons in the ROI
+var numPolygons = roi.size();
+
+// Print the result to the console
+print('Total number of polygons in ROI:', numPolygons);
+
+
+// Add a 'class' property with the value 'water' to the limitedRoi
+var roi = roi.map(function(feature) {
+  return feature.set('class', 1);
+});
+
+print(roi.size());
+
+
+//var testPolygons = limitedRoi.filter(ee.Filter.neq('class', 1));
+//print(testPolygons.size());
+
+//var testPolygons = limitedRoi.map(function(feature) {
+//  return feature.set('class', 'empty');
+//});
+
+// Create a function to filter out polygons in 'roi' that are not in 'limitedRoi'
+//var roiDifference = roi.filter(ee.Filter.inList('system:index', limitedRoi.aggregate_array('system:index')).not());
+
+var coordinates = non_water.coordinates(); // Assuming non_water is a geometry
+
+// Create a FeatureCollection of points from the coordinates
+var mp = ee.FeatureCollection(coordinates.map(function(coord){
+  var point = ee.Feature(ee.Geometry.Point(coord), {}); // Create a point feature
+  return point;
+}));
+
+// Print the resulting FeatureCollection
+print(mp);
+
+//print(roiDifference.limit(10),'roiDifference');
+var mp2 = ee.FeatureCollection(non_water2.coordinates().map(function(p){
+ var polygon = ee.Feature(ee.Geometry.Polygon(p), {})
+ return polygon
+}))
+print(mp)
+
+var numPolygons___ = mp.size();
+print(numPolygons___)
+
+//var limitedNonwater = mp.limit(200);
+
+// Loop through the limitedNonwater feature collection
+mp = mp.map(function(feature) {
+  // Set the 'class' property to 'non_water'
+  return feature.set('class', 0);
+});
+print(mp);
+mp2 = mp2.map(function(feature) {
+  // Set the 'class' property to 'non_water'
+  return feature.set('class', 0);
+});
+print(mp2);
+var non_water1 = non_water1.map(function(feature) {
+  return feature.set('class', 0);
+});
+
+print(non_water1.size());
+var total_nonwater=mp.merge(non_water1);
+var total_nonwater_2=mp2.merge(total_nonwater)
+
+// Create a median composite image
+//var medianComposite = collection.median();
+//Map.addLayer(medianComposite, visParams, 'Sentinel-2 Image');
+// Merge the 'roi' and 'mp' feature collections into 'gcp'
+var gcp = total_nonwater_2.merge(roi);
+print('size',gcp.size())
+// Add a random column and split the GCPs into training and validation set
+var gcp = gcp.randomColumn();
+// This being a simpler classification, we take 60% points
+// for validation. Normal recommended ratio is
+// 70% training, 30% validation
+var trainingGcp = gcp.filter(ee.Filter.lt('random', 0.6));
+var validationGcp = gcp.filter(ee.Filter.gte('random', 0.6));
+
+// Define the bands you want to include in the training set
+//var bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B10', 'B11', 'B12'];
+
+
+
+
+var training = medianComposite.sampleRegions({
+  collection: trainingGcp, 
+  properties: ['class'], 
+  scale: 10,
+  tileScale: 16
+});
+print(training);
+// Print the training set to inspect the data
+print('Training Set:', trainingGcp);
+
+
+// Define the bands to be used for classification
+var bands = ['B2','B3','B4','B8','B8A','B11'];
+
+// Create a feature collection from the training set and select only the spectral bands
+//var trainingFeatures = trainingSet.select(bands).toList(trainingSet.size());
+
+// Define the class property to be used for training (i.e., 'class')
+var classProperty = 'class';
+
+// Create a Random Forest classifier
+var classifier = ee.Classifier.smileRandomForest(100).train({
+  features: training,
+  classProperty: classProperty,
+  inputProperties: bands
+});
+
+// Perform the classification on the entire image
+var classified = medianComposite.select(bands).classify(classifier);
+
+print('classification done',classified)
+// Mask the classified image to display only the pixels with a value of 1
+// Visualization parameters for the classification result
+var classVisParams = {
+  min: 0, // Minimum class value
+  max: 1, // Maximum class value (assumed binary classification)
+  palette: ['blue', 'white'], // Color palette for class 0 (non-water) and class 1 (water)
+};
+
+// Add the classified image to the map with the specified visualization parameters
+Map.addLayer(classified, classVisParams, 'Classification Result');
+
+// Center the map on the ROI.
+Map.addLayer(roi, { color: 'FF0000' }, 'ROI');
+
+var test = classified.sampleRegions({
+  collection:validationGcp,
+  properties: ['class'],
+  tileScale: 16,
+  scale: 10,
+});
+//Map.addLayer(roi);
+
+var testConfusionMatrix = test.errorMatrix('class', 'classification');
+print('Confusion Matrix', testConfusionMatrix);
+print('Test Accuracy', testConfusionMatrix.accuracy());
+// Define the image to export (the classified image)
+var imageToExport = classified;
+
+// Define the region of interest for export
+var exportRegion = roi.geometry(); // Assuming 'roi' is a feature collection
+
+// Define the export parameters
+var exportParams = {
+  image: classified,
+  description: 'classified_image',
+  folder: 'gee', // Specify the folder in your Google Drive where you want to export the image
+  region: exportRegion,
+  scale: 10, // Specify the scale in meters
+  maxPixels: 1e13 // Specify the maximum number of pixels to export
+};
+
+// Export the image to Google Drive
+Export.image.toDrive(exportParams);
+
+// Print a message to the console
+print('Exporting... Check the Tasks tab for the export status.');
