@@ -1,0 +1,463 @@
+var nayagarhblock = ee.FeatureCollection('projects/ee-archa/assets/Nayagarh_block_boundary');
+var waterBodiesShapefile = ee.FeatureCollection('projects/ee-archa/assets/totalwater');
+var nayagarhdistrict = ee.FeatureCollection('projects/ee-archa/assets/Nayagarh_boundary');
+var blockboundary = nayagarhblock.filter(ee.Filter.eq('NAME11', 'Bhapur'));
+
+// Specify the date range
+var startDate = '2022-11-01';
+var endDate = '2022-11-30';
+
+
+
+// Load Sentinel-1 data
+
+// Load the shapefile from your assets.
+
+// Filter the Sentinel-1 images.
+var sentinel1 = ee.ImageCollection('COPERNICUS/S1_GRD')
+                 .filterBounds(blockboundary)
+                 .filterDate('2022-11-01', '2022-11-30') // Adjust these dates to your needs.
+                 .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+                 .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+          
+                 .select(['VV', 'VH']) // Adjust or add bands according to your needs.
+                 .median(); // Using mean composite here, you can adjust this.
+
+// Clip the image to the shape of your region.
+var clippedImage = sentinel1.clip(blockboundary);
+Map.addLayer(blockboundary, { color: 'FF0000' }, 'blockboundary');
+
+
+// Sample a point within the region of interest
+//var samplePoint = ee.Geometry.Point([longitude, latitude]); // Replace with the actual coordinates
+
+// Sample the clipped image at the specified point
+//var sampledValues = clippedImage.sample(samplePoint, 30); // 30 is the number of pixels to sample
+
+// Print the sampled values
+//print('Sampled Values:', sampledValues);
+
+
+
+// Define export parameters.
+/*var exportParams = {
+  image: clippedImage,
+  description: 'sentinel1_export',
+  folder: 'Sentinel 1 image',
+  scale: 10, // Adjust scale if needed; Sentinel-1's resolution is approximately 10m for VV and VH.
+  region: blockboundary.geometry(),
+  fileFormat: 'GeoTIFF',
+  
+};
+
+// Export the image.
+Export.image.toDrive(exportParams);
+
+print('Export initiated', clippedImage);
+
+//var water = waterBodiesShapefile.filterBounds(blockboundary);
+
+// Define export parameters.
+
+/*var watergeometry = water.geometry();
+print(watergeometry.area());
+
+// Create an ImageCollection for Sentinel-1 imagery
+var mediancomposite = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(water, nonwater)  // Filter by the Odagaon block boundary
+  .filterDate(startDate, endDate)
+  .median();
+  
+
+var applySpeckleFilter = function(image) {
+  var filter = ee.Image(image).focal_mean(10, 'square', 'pixels');
+  return image.divide(filter);
+};
+
+var mediancomposite =  applySpeckleFilter(mediancomposite);
+
+Map.addLayer(blockboundary, { color: 'FF0000' }, 'blockboundary');
+//Map.addLayer(nayagarhblock, { color: 'FF0000' }, 'nayagarhdistrict');
+// Define bands for training
+var bands = ['VV', 'VH'];
+
+// Filter water bodies for Odagaon block
+var water = waterBodiesShapefile.filterBounds(blockboundary);
+var water = water.limit(200);
+
+// Add a property 'class' to water bodies
+Map.centerObject(blockboundary, 10);
+
+var numPolygons = water.size();
+print(numPolygons);
+
+var water = water.map(function(feature) {
+  return feature.set('class', 1);
+});
+
+print(water.size());
+
+
+var coordinates = nonwater.coordinates();
+
+var mp2 = ee.FeatureCollection(nonwater.coordinates().map(function(p){
+ var polygon = ee.Feature(ee.Geometry.Polygon(p), {});
+ return polygon;
+}));
+
+mp2 = mp2.map(function(feature) {
+  // Set the 'class' property to 'non_water'
+  return feature.set('class', 0);
+});
+print(mp2);
+
+// Filter out features without the 'class' property and set a default value of 0
+mp2 = mp2.filter(ee.Filter.notNull(['class'])).map(function(feature) {
+  return feature.set('class', 0);
+});
+
+var total_nonwater = mp2.merge(nonwater);
+
+var gcp = total_nonwater.merge(water);
+print('size', gcp.size());
+
+
+
+print(gcp.size());
+// Add a random column and split the GCPs into training and validation set
+var gcp = gcp.randomColumn();
+
+// This being a simpler classification, we take 80% points for training and 20% for validation
+var trainingGcp = gcp.filter(ee.Filter.lt('random', 0.8));
+var validationGcp = gcp.filter(ee.Filter.gte('random', 0.8));
+
+trainingGcp = trainingGcp .filter(ee.Filter.neq('system:index', '1_2_0'));
+
+print(trainingGcp);
+var training = mediancomposite.sampleRegions({
+  collection: trainingGcp, 
+  properties: ['class'], 
+  scale: 20,
+  tileScale: 16
+});
+
+
+
+
+
+
+// Print the training set to inspect the data
+print('Training Set:', training);
+
+
+// Define the class property to be used for training (i.e., 'class')
+var classProperty = 'class';
+
+// Create a Random Forest classifier
+var classifier = ee.Classifier.smileRandomForest(100).train({
+  features: training,
+  classProperty: classProperty,
+  inputProperties: bands
+});
+
+
+
+// Train the classifier
+var classifier = classifier.train({
+  features: training,
+  classProperty: classProperty,
+  inputProperties: bands,
+});
+
+// Perform the classification on the entire image
+var classified = mediancomposite.select(bands).classify(classifier);
+
+
+print('RF classification done', classified);
+
+// Center the map on the ROI.
+Map.addLayer(water, { color: '0000FF' }, 'water');
+
+var test = classified.sampleRegions({
+  collection: validationGcp,
+  properties: ['class'],
+  tileScale: 16,
+  scale: 20,
+});
+// Map.addLayer(roi);
+
+var testConfusionMatrix = test.errorMatrix('class', 'classification');
+print('RF Confusion Matrix', testConfusionMatrix);
+print('RF Test Accuracy', testConfusionMatrix.accuracy());
+print ('fscore', testConfusionMatrix .fscore(1));
+print('kappa statistic', testConfusionMatrix .kappa());
+
+
+
+
+// SVM CODE
+var Classifier = ee.Classifier.libsvm({
+  kernelType: 'RBF', // You can choose 'linear', 'poly', 'rbf', etc.
+  gamma: 0.5, // Gamma parameter for the RBF kernel
+  cost: 10 // Cost parameter
+});
+
+// Train the SVM classifier
+var svmClassifier = Classifier.train({
+  features: training,
+  classProperty: classProperty,
+  inputProperties: bands
+});
+
+// Perform the SVM classification on the entire image
+var svmClassified = mediancomposite.select(bands).classify(svmClassifier);
+
+print('SVM classification done', svmClassified);
+
+// Add SVM classified layer to the map
+Map.addLayer(svmClassified, {min: 0, max: 1, palette: ['blue', 'red']}, 'SVM Classified');
+
+// Create a confusion matrix for SVM
+var svmTest = svmClassified.sampleRegions({
+  collection: validationGcp,
+  properties: ['class'],
+  tileScale: 16,
+  scale: 20,
+});
+
+var svmConfusionMatrix = svmTest.errorMatrix('class', 'classification');
+print('SVM Confusion Matrix', svmConfusionMatrix);
+print('SVM Test Accuracy', svmConfusionMatrix.accuracy());
+print ('fscore', svmConfusionMatrix .fscore(1));
+print('kappa statistic', svmConfusionMatrix .kappa());
+
+
+var newCollection = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(nayagarhdistrict)
+  .filterDate(startDate, endDate)
+  .median();
+
+
+var nayagarhclassified = newCollection.select(bands).classify(classifier);
+
+
+
+//Map.addLayer(nayagarhclassified, {min: 0, max: 1, palette: ['000000', 'blue']}, 'Nayagarh Classified');
+
+//Map.addLayer(nayagarhdistrict, { color: '00FF00' }, 'Nayagarh district');
+//Map.addLayer(waterBodiesShapefile, { color: '00FF00' }, 'Nayagarh district water Bodies Shapefile');
+
+/*var imageToExport = classified;
+
+// Specify the region of interest for the export (you can use the same exportRegion as before)
+//var exportRegion = ee.Geometry.Rectangle(roi);
+
+var exportParametersImage = {
+  image: imageToExport,
+  description: 'classified_image', // Provide a name for your export
+  folder: 'Google Earth', // Set the folder in your Google Drive where the export will be saved
+  scale: 10, // Define the export scale (e.g., 10 meters per pixel)
+  region: nayagarhdistrict.geometry(), // Set the region of interest
+  fileFormat: 'GeoTIFF', // Choose the export file format (e.g., GeoTIFF)
+};
+
+// Export the classified image
+Export.image.toDrive(exportParametersImage);*/
+
+
+
+// Load Sentinel-2 data
+
+/*var mediancomposite = ee.ImageCollection('COPERNICUS/S2')
+  .filterBounds(water, nonwater)  // Filter by the Odagaon block boundary
+  .filterDate(startDate, endDate)
+  .median();
+  
+
+
+
+Map.addLayer(blockboundary, { color: 'FF0000' }, 'blockboundary');
+// Define bands for training
+var bands = ['B2','B3','B4','B8A','B8','B11'];
+
+// Filter water bodies for Odagaon block
+var water = waterBodiesShapefile.filterBounds(blockboundary);
+var water = water.limit(200);
+
+// Add a property 'class' to water bodies
+Map.centerObject(blockboundary, 10);
+
+var numPolygons = water.size();
+print(numPolygons);
+
+var water = water.map(function(feature) {
+  return feature.set('class', 1);
+});
+
+print(water.size());
+
+
+var coordinates = nonwater.coordinates();
+
+var mp2 = ee.FeatureCollection(nonwater.coordinates().map(function(p){
+ var polygon = ee.Feature(ee.Geometry.Polygon(p), {});
+ return polygon;
+}));
+
+mp2 = mp2.map(function(feature) {
+  // Set the 'class' property to 'non_water'
+  return feature.set('class', 0);
+});
+print(mp2);
+
+// Filter out features without the 'class' property and set a default value of 0
+mp2 = mp2.filter(ee.Filter.notNull(['class'])).map(function(feature) {
+  return feature.set('class', 0);
+});
+
+var total_nonwater = mp2.merge(nonwater);
+
+var gcp = total_nonwater.merge(water);
+print('size', gcp.size());
+
+
+
+print(gcp.size());
+// Add a random column and split the GCPs into training and validation set
+var gcp = gcp.randomColumn();
+
+// This being a simpler classification, we take 80% points for training and 20% for validation
+var trainingGcp = gcp.filter(ee.Filter.lt('random', 0.8));
+var validationGcp = gcp.filter(ee.Filter.gte('random', 0.8));
+
+trainingGcp = trainingGcp .filter(ee.Filter.neq('system:index', '1_2_0'));
+
+print(trainingGcp);
+var training = mediancomposite.sampleRegions({
+  collection: trainingGcp, 
+  properties: ['class'], 
+  scale: 20,
+  tileScale: 16
+});
+
+
+
+
+
+
+// Print the training set to inspect the data
+print('Training Set:', training);
+
+
+// Define the class property to be used for training (i.e., 'class')
+var classProperty = 'class';
+
+// Create a Random Forest classifier
+var classifier = ee.Classifier.smileRandomForest(100).train({
+  features: training,
+  classProperty: classProperty,
+  inputProperties: bands
+});
+
+
+
+// Train the classifier
+var classifier = classifier.train({
+  features: training,
+  classProperty: classProperty,
+  inputProperties: bands,
+});
+
+// Perform the classification on the entire image
+var classified = mediancomposite.select(bands).classify(classifier);
+
+
+print('RF classification done', classified);
+
+// Center the map on the ROI.
+//Map.addLayer(water, { color: 'FF0000' }, 'water');
+
+var test = classified.sampleRegions({
+  collection: validationGcp,
+  properties: ['class'],
+  tileScale: 16,
+  scale: 20,
+});
+// Map.addLayer(roi);
+
+var testConfusionMatrix = test.errorMatrix('class', 'classification');
+print('RF Confusion Matrix', testConfusionMatrix);
+print('RF Test Accuracy', testConfusionMatrix.accuracy());
+print ('fscore', testConfusionMatrix .fscore(1));
+print('kappa statistic', testConfusionMatrix .kappa());
+
+
+
+
+// SVM CODE
+var Classifier = ee.Classifier.libsvm({
+  kernelType: 'RBF', // You can choose 'linear', 'poly', 'rbf', etc.
+  gamma: 0.5, // Gamma parameter for the RBF kernel
+  cost: 10 // Cost parameter
+});
+
+// Train the SVM classifier
+var svmClassifier = Classifier.train({
+  features: training,
+  classProperty: classProperty,
+  inputProperties: bands
+});
+
+// Perform the SVM classification on the entire image
+var svmClassified = mediancomposite.select(bands).classify(svmClassifier);
+
+print('SVM classification done', svmClassified);
+
+// Add SVM classified layer to the map
+Map.addLayer(svmClassified.clip(), {min: 0, max: 1, palette: ['blue', 'green']}, 'SVM Classified');
+
+// Create a confusion matrix for SVM
+var svmTest = svmClassified.sampleRegions({
+  collection: validationGcp,
+  properties: ['class'],
+  tileScale: 16,
+  scale: 20,
+});
+
+var svmConfusionMatrix = svmTest.errorMatrix('class', 'classification');
+print('SVM Confusion Matrix', svmConfusionMatrix);
+print('SVM Test Accuracy', svmConfusionMatrix.accuracy());
+print ('fscore', svmConfusionMatrix .fscore(1));
+print('kappa statistic', svmConfusionMatrix .kappa());
+
+
+
+
+
+
+// Function to compute NDWI
+var computeNDWI = function(image) {
+  var ndwi = image.normalizedDifference(['B3', 'B8']);
+  return image.addBands(ndwi.rename('NDWI'));
+};
+
+// Function to compute MNDWI
+var computeMNDWI = function(image) {
+  var mndwi = image.normalizedDifference(['B3', 'B11']);
+  return image.addBands(mndwi.rename('MNDWI'));
+};
+
+// Compute NDWI and MNDWI for the median composite
+var mediancompositeWithIndices = computeNDWI(computeMNDWI(mediancomposite));*/
+
+// Display NDWI and MNDWI
+//Map.addLayer(mediancompositeWithIndices.select('NDWI'), {min: -0.5, max: 0.5, palette: ['00FFFF', '0000FF']}, 'NDWI');
+//Map.addLayer(mediancompositeWithIndices.select('MNDWI'), {min: -0.5, max: 0.5, palette: ['00FFFF', '0000FF']}, 'MNDWI');
+
+
+
+
+
+
+
+
